@@ -7,7 +7,10 @@
 
 #include "TestLCD.h"
 #include "ASCIIFont.h"
+#include "LCD.h"
 #include "Scene.h"
+
+#include <sstream>
 
 #define MAX_LOADSTRING 100
 
@@ -23,7 +26,7 @@ static const unsigned long ledOffHighlight = RGB(255, 0, 0);
 const static DWORD PREV_KEY_MASK = (1 << 30);   // bit is set if key is down before message
 const static DWORD PREV_KEY_STATE = (1 << 31);  // bit is set if key is being released
 
-static byte *screenBuffer = NULL;
+static byte *LCDScreenBuffer = NULL;
 static int column = 0;
 static int row = 0;
 static int screenBufferIdx = 0;
@@ -40,20 +43,35 @@ static void DrawControls(HDC dc);
 
 static void Present(HDC hdc);
 
-void SetPixel(const int x, const int y);
-void ClearPixel(const int x, const int y);
-void TogglePixel(const int x, const int y);
-void SetByte(const byte c, const int x, const int y);
-void SetChar(const char c, const int x, const int y);
-void SetString(const char *str, const int x, const int y);
-void SetByteArray(const byte *arr, const size_t sz, const int x, const int y);
-void SetLine(const int x1, const int y1, const int x2, const int y2);
-void SetLinePolar(const int x, const int y, const float ang, const int len);
-void ClearBuffer();
+extern "C" {
+    unsigned char PORTA = 0;
+    unsigned char PORTB = 0;
+    unsigned char PORTC = 0;
+    unsigned char PORTD = 0;
+    unsigned char PORTE = 0;
+    unsigned char PORTF = 0;
+
+    unsigned char PINA = 0;
+    unsigned char PINB = 0;
+    unsigned char PINC = 0;
+    unsigned char PIND = 0;
+    unsigned char PINE = 0;
+    unsigned char PINF = 0;
+
+    unsigned char DDRA = 0;
+    unsigned char DDRB = 0;
+    unsigned char DDRC = 0;
+    unsigned char DDRD = 0;
+    unsigned char DDRE = 0;
+    unsigned char DDRF = 0;
+
+    unsigned int g_offset = 0;
+}
 
 static void CreateScreenBuffer(const int numCols, const int numRows);
 static void FreeScreenBuffer();
-static const BOOL CalcOffsetAndShift(const int x, const int y, size_t *offset, size_t *shift);
+static const int CalcOffsetAndShift(const int x, const int y, unsigned char *offset, unsigned char *shift);
+unsigned char *GetScreenBuffer() { return LCDScreenBuffer; }
 
 // GetInput, Update, and DrawScene come from external file scene.cpp
 
@@ -80,6 +98,324 @@ void ResetCounter()
     g_counterStart = g_currTime;
 }
 
+// LCD Drawing funcs
+void LCDBufferWrite(unsigned char dc, unsigned char data)
+{
+    unsigned char xVal = 0;
+    unsigned char yVal = 0;
+    byte *buffer = NULL;
+
+    if (dc)
+    {
+        // data operation
+        buffer = GetScreenBuffer();
+        if (buffer)
+        {
+            buffer[g_offset] = data;
+            g_offset %= ++g_offset;            
+        }
+    }
+    else
+    {
+        // command
+        if (data & 0x80)
+        {
+            // moving x
+            xVal = data & 0x7f;
+            if (xVal >= LCD_X)
+            {
+                return;
+            }
+            yVal = g_offset / 8;
+            if (g_offset % 84)
+            {
+                yVal++;
+            }
+        }
+        else if (data & 0x40)
+        {
+            // moving y
+            yVal = data & 0x3f;
+            if (yVal >= (LCD_Y / 8))
+            {
+                return;
+            }
+            xVal = g_offset % 84;
+        }
+        else
+        {
+            OutputDebugStringA("Unsupported command\n");
+            return;
+        }
+        g_offset = xVal + yVal * LCD_X;
+    }
+}
+
+//=============================================================================
+void LCDClearBuffer()
+{
+    if (LCDScreenBuffer == NULL)
+    {
+        return;
+    }
+
+    memset(LCDScreenBuffer, 0, sizeof(char)*LCD_X*NUM_ROWS);
+}
+
+void LCDSetPixel(const int x, const int y)
+{
+    unsigned char offset = 0;
+    unsigned char shift = 0;
+    byte val = 0;
+    byte bit = 0x00;
+
+    // find out where to set
+    if (!CalcOffsetAndShift(x, y, &offset, &shift))
+    {
+        return;
+    }
+
+    // read the current value
+    val = LCDScreenBuffer[offset];
+    bit = (1 << shift);
+
+    LCDScreenBuffer[offset] = val | bit;
+}
+
+/*
+void LCDClearPixel(const int x, const int y)
+{
+    unsigned char offset = 0;
+    unsigned char shift = 0;
+    byte val = 0;
+    byte mask = 0x00;
+
+    // find out where to set
+    if (!CalcOffsetAndShift(x, y, &offset, &shift))
+    {
+        return;
+    }
+
+    // read the current value
+    val = LCDScreenBuffer[offset];
+    mask = ~(1 << shift);
+
+    LCDScreenBuffer[offset] = val & mask;
+}
+
+void LCDTogglePixel(const int x, const int y)
+{
+    unsigned char offset = 0;
+    unsigned char shift = 0;
+    byte val = 0;
+    byte bit = 0x00;
+
+    // find out where to set
+    if (!CalcOffsetAndShift(x, y, &offset, &shift))
+    {
+        return;
+    }
+
+    // read the current value
+    val = LCDScreenBuffer[offset];
+    bit = (1 << shift);
+
+    LCDScreenBuffer[offset] = val ^ bit;
+}
+
+void LCDSetByte(const byte c, const int x, const int y)
+{
+    size_t bitIdx = 0;
+    byte bit = 0;
+    byte mask = 0x01;
+
+    for (bitIdx = 0; bitIdx < 8; ++bitIdx)
+    {
+        bit = (c >> bitIdx) & mask;
+        if (bit)
+        {
+            LCDSetPixel(x, y + bitIdx);
+        }
+        else
+        {
+            LCDClearPixel(x, y + bitIdx);
+        }
+    }
+}
+
+void LCDSetChar(const char c, const int x, const int y)
+{
+    size_t idx = 0;
+    size_t bitIdx = 0;
+    const unsigned char *chr = NULL;
+    unsigned char ch = 0;
+    byte bit = 0;
+    byte mask = 0x01;
+
+    chr = ASCII[c - ' '];
+
+    for (idx = 0; idx < 5; ++idx)
+    {
+        ch = chr[idx];
+        for (bitIdx = 0; bitIdx < 8; ++bitIdx)
+        {
+            bit = (ch >> bitIdx) & mask;
+            if (bit)
+            {
+                LCDSetPixel(x + idx, y + bitIdx);
+            }
+            else
+            {
+                LCDClearPixel(x + idx, y + bitIdx);
+            }
+        }
+    }
+}
+
+void LCDSetString(const char *str, const int x, const int y)
+{
+    size_t idx = 0;
+    size_t len = 0;
+    char c = 0;
+    int xPos = 0;
+    int yPos = y;
+
+    if (str == NULL)
+    {
+        return;
+    }
+    if ((x >= LCD_X) || (y >= LCD_Y))
+    {
+        return;
+    }
+    len = strlen(str);
+
+    for (xPos = x, idx = 0; idx < len; xPos += 6, ++idx)
+    {
+        c = str[idx];
+        switch (c)
+        {
+        case '\n':
+            yPos += 9;
+        case '\r':
+            xPos = x - 6; // -6 to offset the fact we update xPos immediately
+            break;
+        default:
+            LCDSetChar(c, xPos, yPos);
+        }
+    }
+}
+
+void LCDSetByteArray(const byte *arr, const unsigned int sz, const int x, const int y)
+{
+    size_t idx = 0;
+    byte val = 0;
+
+    for (idx = 0; idx < sz; ++idx)
+    {
+        val = arr[idx];
+        LCDSetByte(val, x + idx, y);
+    }
+}
+
+void LCDSetLine(const int x1, const int y1, const int x2, const int y2)
+{
+    int x_1(x1);
+    int y_1(y1);
+    int x_2(x2);
+    int y_2(y2);
+    int lastY = 0;
+    int y = 0;
+    int idx = 0;
+    float grad = 0.0f;
+    float y_intercept = 0.0f;
+
+    // sort x and y to be in right order
+    if (x_1 > x_2)
+    {
+        x_2 = x1;
+        x_1 = x2;
+        y_2 = y1;
+        y_1 = y2;
+    }
+    lastY = y_1;
+
+    if (x_1 == x_2)
+    {
+        if (y_1 == y_2)
+        {
+            LCDSetPixel(x_1, y_1);
+        }
+        else if (y_1 < y_2)
+        {
+            for (idx = y_1; idx <= y_2; ++idx)
+            {
+                LCDSetPixel(x_1, idx);
+            }
+        }
+        else
+        {
+            for (idx = y_2; idx <= y_1; ++idx)
+            {
+                LCDSetPixel(x_1, idx);
+            }
+        }
+    }
+    else
+    {
+        // calc gradient
+        grad = ((float)(y_2 - y_1)) / ((float)(x_2 - x_1));
+        // y = mx + c
+        // c = y - mx
+        y_intercept = y_2 - (grad * x_2);
+        for (idx = x_1; idx <= x_2; ++idx)
+        {
+            y = (int)floor(((grad * idx) + y_intercept) + 0.5f);
+            if (((y + 1) == lastY) || ((y - 1) == lastY) || (y == lastY))
+            {
+                LCDSetPixel(idx, y);
+            }
+            else
+            {
+                LCDSetLine(idx, (y<y_1 ? lastY - 1 : lastY + 1), idx, y);
+            }
+            lastY = y;
+        }
+    }
+}
+
+void LCDSetLinePolar(const int x, const int y, const float ang, const int len)
+{
+    int x1 = x;
+    int y1 = y;
+    int x2 = x;
+    int y2 = y;
+    float sinAng = sinf(ang);
+    float cosAng = cosf(ang);
+
+    x2 = (int)floor((len * cosAng) + 0.5) + x;
+    y2 = (int)floor((len * sinAng) + 0.5) + y;
+
+    LCDSetLine(x1, y1, x2, y2);
+}
+*/
+// -----------------------------------------------------------
+
+
+
+const double GetSecondsSinceCounterStart()
+{
+    // Time difference between this frame and the previous.
+    return (g_currTime - g_counterStart)*g_secondsPerCount;
+}
+void ResetCounter()
+{
+    g_counterStart = g_currTime;
+}
+
+
+extern
+const int Rand(const int minVal, const int maxVal);
 
 // Forward declarations of functions included in this code module:
 ATOM				MyRegisterClass(HINSTANCE hInstance);
@@ -98,6 +434,26 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
     // TODO: Place code here.
     MSG msg = { 0 };
     HACCEL hAccelTable;
+
+    InitGame();
+
+    {
+        std::stringstream ss;
+        for (int idx = 0, wrap = 0; idx < 200; ++idx, ++wrap)
+        {
+            if (wrap == 0)
+            {
+                ss.str() = "";
+            }
+            ss << "Rand( 1, 6 ) = " << Rand(1, 6) << ", ";
+            OutputDebugString(ss.str().c_str());
+            if (wrap == 4)
+            {
+                OutputDebugString("\n");
+                wrap = 0;
+            }
+        }
+    }
 
     // Initialize global strings
     LoadString(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
@@ -145,29 +501,26 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
             }
         }
         // Otherwise, do animation/game stuff.
+        if (1)
+        {
+            GetInput();
+            Update(g_deltaTime);
+            DrawScene();
+        }
         else
         {
-            if (1)
-            {
-                GetInput();
-                Update(g_deltaTime);
-                DrawScene();
-            }
-            else
-            {
-                Sleep(50);
-            }
-            OutputDebugString("Current state = \"");
-            OutputDebugString(STATE_STRINGS[g_gameState]);
-            OutputDebugString("\"\n");
-            RedrawWindow(hWnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+            Sleep(50);
         }
+        OutputDebugString("Current state = \"");
+        OutputDebugString(STATE_STRINGS[g_gameState]);
+        OutputDebugString("\"\n");
+        RedrawWindow(hWnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
     }
+
+    CleanupGame();
 
     return (int)msg.wParam;
 }
-
-
 
 //
 //  FUNCTION: MyRegisterClass()
@@ -233,7 +586,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
         return FALSE;
     }
 
-    CreateScreenBuffer(SCREEN_WIDTH, NUM_ROWS);
+    CreateScreenBuffer(LCD_X, NUM_ROWS);
     InitScene();
     DrawScene();
     ShowWindow(hWnd, nCmdShow);
@@ -514,7 +867,7 @@ static void DrawControls(HDC dc)
 static void Present(HDC dc)
 {
     size_t idx = 0;
-    size_t arraySz = SCREEN_WIDTH * NUM_ROWS;
+    size_t arraySz = LCD_X * NUM_ROWS;
     HPEN oldPen = 0;
     HPEN pen = CreatePen(PS_SOLID, 1, pixCol);
     HBRUSH onBrush = CreateSolidBrush(pixCol);
@@ -524,7 +877,7 @@ static void Present(HDC dc)
 
     for (idx = 0; idx < arraySz; ++idx)
     {
-        DrawByteEx(dc, onBrush, offBrush, screenBuffer[idx], idx % SCREEN_WIDTH, (idx / SCREEN_WIDTH) * 8);
+        DrawByteEx(dc, onBrush, offBrush, LCDScreenBuffer[idx], idx % LCD_X, (idx / LCD_X) * 8);
     }
 
     // restore old objects
@@ -537,15 +890,15 @@ static void Present(HDC dc)
 
 static void CreateScreenBuffer(const int numCols, const int numRows)
 {
-    if (screenBuffer != NULL)
+    if (LCDScreenBuffer != NULL)
     {
         MessageBox(NULL, "Screen buffer already allocated.", "Double Allocate", MB_OK | MB_ICONERROR);
         PostQuitMessage(1);
     }
 
-    screenBuffer = (byte*)malloc(sizeof(byte)*numCols*numRows);
+    LCDScreenBuffer = (unsigned char*)malloc(sizeof(unsigned char)*numCols*numRows);
 
-    if (screenBuffer == NULL)
+    if (LCDScreenBuffer == NULL)
     {
         MessageBox(NULL, "Failed to allocate screen buffer.", "Failed Allocate", MB_OK | MB_ICONERROR);
         PostQuitMessage(2);
@@ -554,19 +907,19 @@ static void CreateScreenBuffer(const int numCols, const int numRows)
 
 static void FreeScreenBuffer()
 {
-    if (screenBuffer == NULL)
+    if (LCDScreenBuffer == NULL)
     {
         MessageBox(NULL, "Screen buffer not allocated.", "Invalid free", MB_OK | MB_ICONERROR);
         return;
     }
 
-    free(screenBuffer);
-    screenBuffer = NULL;
+    free(LCDScreenBuffer);
+    LCDScreenBuffer = NULL;
 }
 
-static const BOOL CalcOffsetAndShift(const int x, const int y, size_t *offset, size_t *shift)
+static const int CalcOffsetAndShift(const int x, const int y, unsigned char *offset, unsigned char *shift)
 {
-    if ((x < 0) || (x >= SCREEN_WIDTH) || (y < 0) || (y >= SCREEN_HEIGHT))
+    if ((x < 0) || (x >= LCD_X) || (y < 0) || (y >= LCD_Y))
     {
         return FALSE;
     }
@@ -575,256 +928,8 @@ static const BOOL CalcOffsetAndShift(const int x, const int y, size_t *offset, s
         return FALSE;
     }
 
-    *offset = x + ((int)(y / 8))*SCREEN_WIDTH;
+    *offset = x + ((int)(y / 8))*LCD_X;
     *shift = y % 8;
 
     return TRUE;
-}
-
-//=============================================================================
-void ClearBuffer()
-{
-    if (screenBuffer == NULL)
-    {
-        return;
-    }
-
-    memset(screenBuffer, 0, sizeof(char)*SCREEN_WIDTH*NUM_ROWS);
-}
-
-void SetPixel(const int x, const int y)
-{
-    size_t offset = 0;
-    size_t shift = 0;
-    byte val = 0;
-    byte bit = 0x00;
-
-    // find out where to set
-    if (!CalcOffsetAndShift(x, y, &offset, &shift))
-    {
-        return;
-    }
-
-    // read the current value
-    val = screenBuffer[offset];
-    bit = (1 << shift);
-
-    screenBuffer[offset] = val | bit;
-}
-
-void ClearPixel(const int x, const int y)
-{
-    size_t offset = 0;
-    size_t shift = 0;
-    byte val = 0;
-    byte mask = 0x00;
-
-    // find out where to set
-    if (!CalcOffsetAndShift(x, y, &offset, &shift))
-    {
-        return;
-    }
-
-    // read the current value
-    val = screenBuffer[offset];
-    mask = ~(1 << shift);
-
-    screenBuffer[offset] = val & mask;
-}
-
-void TogglePixel(const int x, const int y)
-{
-    size_t offset = 0;
-    size_t shift = 0;
-    byte val = 0;
-    byte bit = 0x00;
-
-    // find out where to set
-    if (!CalcOffsetAndShift(x, y, &offset, &shift))
-    {
-        return;
-    }
-
-    // read the current value
-    val = screenBuffer[offset];
-    bit = (1 << shift);
-
-    screenBuffer[offset] = val ^ bit;
-}
-
-void SetByte(const byte c, const int x, const int y)
-{
-    size_t bitIdx = 0;
-    byte bit = 0;
-    byte mask = 0x01;
-
-    for (bitIdx = 0; bitIdx < 8; ++bitIdx)
-    {
-        bit = (c >> bitIdx) & mask;
-        if (bit)
-        {
-            SetPixel(x, y + bitIdx);
-        }
-        else
-        {
-            ClearPixel(x, y + bitIdx);
-        }
-    }
-}
-
-void SetChar(const char c, const int x, const int y)
-{
-    size_t idx = 0;
-    size_t bitIdx = 0;
-    const unsigned char *chr = NULL;
-    unsigned char ch = 0;
-    byte bit = 0;
-    byte mask = 0x01;
-
-    chr = ASCII[c - ' '];
-
-    for (idx = 0; idx < 5; ++idx)
-    {
-        ch = chr[idx];
-        for (bitIdx = 0; bitIdx < 8; ++bitIdx)
-        {
-            bit = (ch >> bitIdx) & mask;
-            if (bit)
-            {
-                SetPixel(x + idx, y + bitIdx);
-            }
-            else
-            {
-                ClearPixel(x + idx, y + bitIdx);
-            }
-        }
-    }
-}
-
-void SetString(const char *str, const int x, const int y)
-{
-    size_t idx = 0;
-    size_t len = 0;
-    char c = 0;
-    int xPos = 0;
-    int yPos = y;
-
-    if (str == NULL)
-    {
-        return;
-    }
-    if ((x >= SCREEN_WIDTH) || (y >= SCREEN_HEIGHT))
-    {
-        return;
-    }
-    len = strlen(str);
-
-    for (xPos = x, idx = 0; idx < len; xPos += 6, ++idx)
-    {
-        c = str[idx];
-        switch (c)
-        {
-        case '\n':
-            yPos += 9;
-        case '\r':
-            xPos = x-6; // -6 to offset the fact we update xPos immediately
-            break;
-        default:
-            SetChar(c, xPos, yPos);
-        }
-    }
-}
-
-void SetByteArray(const byte *arr, const size_t sz, const int x, const int y)
-{
-    size_t idx = 0;
-    byte val = 0;
-
-    for (idx = 0; idx < sz; ++idx)
-    {
-        val = arr[idx];
-        SetByte(val, x + idx, y);
-    }
-}
-
-void SetLine(const int x1, const int y1, const int x2, const int y2)
-{
-    int x_1(x1);
-    int y_1(y1);
-    int x_2(x2);
-    int y_2(y2);
-    int lastY = 0;
-    int y = 0;
-    int idx = 0;
-    float grad = 0.0f;
-    float y_intercept = 0.0f;
-
-    // sort x and y to be in right order
-    if (x_1 > x_2)
-    {
-        x_2 = x1;
-        x_1 = x2;
-        y_2 = y1;
-        y_1 = y2;
-    }
-    lastY = y_1;
-
-    if (x_1 == x_2)
-    {
-        if (y_1 == y_2)
-        {
-            SetPixel(x_1, y_1);
-        }
-        else if (y_1 < y_2)
-        {
-            for (idx = y_1; idx <= y_2; ++idx)
-            {
-                SetPixel(x_1, idx);
-            }
-        }
-        else
-        {
-            for (idx = y_2; idx <= y_1; ++idx)
-            {
-                SetPixel(x_1, idx);
-            }
-        }
-    }
-    else
-    {
-        // calc gradient
-        grad = ((float)(y_2 - y_1)) / ((float)(x_2 - x_1));
-        // y = mx + c
-        // c = y - mx
-        y_intercept = y_2 - (grad * x_2);
-        for (idx = x_1; idx <= x_2; ++idx)
-        {
-            y = (int)floor(((grad * idx) + y_intercept) + 0.5f);
-            if (((y + 1) == lastY) || ((y - 1) == lastY) || (y == lastY))
-            {
-                SetPixel(idx, y);
-            }
-            else
-            {
-                //SetPixel(idx, y);
-                SetLine(idx, (y<y_1 ? lastY-1 : lastY+1), idx, y);
-            }
-            lastY = y;
-        }
-    }
-}
-
-void SetLinePolar(const int x, const int y, const float ang, const int len)
-{
-    int x1 = x;
-    int y1 = y;
-    int x2 = x;
-    int y2 = y;
-    float sinAng = sinf(ang);
-    float cosAng = cosf(ang);
-
-    x2 = (int)floor((len * cosAng) + 0.5) + x;
-    y2 = (int)floor((len * sinAng) + 0.5) + y;
-
-    SetLine(x1, y1, x2, y2);
 }

@@ -3,13 +3,11 @@
 
 #include "stdafx.h"
 #include "ASCIIFont.h"
+#include "graphics.h"
 
 extern const int PIX_WIDTH;
 extern const int PIX_HEIGHT;
 extern const int PIX_SPACING;
-
-extern const int SCREEN_WIDTH;
-extern const int SCREEN_HEIGHT;
 
 extern const int NUM_ROWS;
 
@@ -20,6 +18,8 @@ extern void DrawScene();
 extern void GetInput();
 extern void Update(const double deltaTime);
 extern void InitScene();
+extern void InitGame();
+extern void CleanupGame();
 
 extern BOOL btn_A_Down;
 extern BOOL btn_B_Down;
@@ -45,6 +45,7 @@ typedef struct
     double oldY;
     double currentVelocityX;
     double currentVelocityY;
+    BOOL wrapped;
 } ShellData;
 
 #endif

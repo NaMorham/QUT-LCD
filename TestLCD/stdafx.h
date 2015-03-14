@@ -2,8 +2,8 @@
 // or project specific include files that are used frequently, but
 // are changed infrequently
 //
-
-#pragma once
+#ifndef __AMH__TESTLCD__STDAFX_H__
+#define __AMH__TESTLCD__STDAFX_H__
 
 #include "targetver.h"
 
@@ -27,3 +27,5 @@ typedef unsigned char byte;
 const size_t LONG_BUF_SIZE = 1024;
 const size_t BUF_SIZE = 256;
 const size_t SHORT_BUF_SIZE = 64;
+
+#endif // __AMH__TESTLCD__STDAFX_H__
